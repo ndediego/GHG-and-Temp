@@ -1,0 +1,33 @@
+## Visualizing Trends
+
+To get a sense of the data, graphs measuring the daily average concentration of each of the pollutants on interest were generated, and can be seen below.
+
+
+```{r}
+co <- total %>% 
+  ggplot(aes(x = date)) +
+  geom_line(aes(y = avg_co), color = 'red') +
+  ggtitle("Average Carbon Monoxide Emissions Over Time") +
+  theme(plot.title = element_text(size=10))
+
+so2 <- total %>% 
+  ggplot(aes(x = date)) +
+  geom_line(aes(y = avg_so2), color = 'blue') +
+  ggtitle("Average Sulfur Dioxide Emissions Over Time")+
+  theme(plot.title = element_text(size=10))
+
+no2 <- total %>% 
+  ggplot(aes(x = date)) +
+  geom_line(aes(y = avg_No2), color = 'green') +
+  ggtitle("Average Nitrogen Dioxide Emissions Over Time")+
+  theme(plot.title = element_text(size=10))
+
+o3 <- total %>% 
+  ggplot(aes(x = date)) +
+  geom_line(aes(y = avg_O3), color = 'purple') +
+  ggtitle("Average Sulfur Dioxide Emissions Over Time")+
+  theme(plot.title = element_text(size=10))
+
+grid.arrange(co, so2, no2, o3, ncol = 2)
+```
+
