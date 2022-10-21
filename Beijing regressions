@@ -1,0 +1,48 @@
+
+## Performing Regressions on Temperature and Pollution Data
+
+
+
+
+```{r}
+model <- lm(AvgTemperature ~ avg_co + avg_so2 + avg_No2 + avg_O3, data = total)
+
+coef(model)
+
+summary(model)
+```
+
+
+```{r}
+model2 <- step(lm(AvgTemperature ~ avg_co + avg_so2 + avg_No2 + avg_O3, data = total), direction = "both")
+
+summary(model2)
+```
+
+
+```{r,results='hide',message=FALSE,warning=FALSE}
+map_to_season_north <- function(month_int){
+  
+  months_df <- data.frame(month_num = c(1,2,3,4,5,6,7,8,9,10,11,12), 
+                          season=c('winter', 'winter', 'spring', 'spring', 'spring', 'summer', 'summer', 'summer', 'fall', 'fall', 'fall', 'winter'))
+  
+  result <- months_df[months_df$month_num == month_int,]$season
+  return(result)
+}
+
+season <- unlist(lapply(month(total$Month), map_to_season_north))
+
+
+total_w_season <- cbind(total, season)
+
+total_w_season
+```
+
+
+```{r}
+model3 <- lm(AvgTemperature ~ avg_co + avg_so2 + avg_No2 + avg_O3 + as.factor(season), data = total_w_season)
+
+
+summary(model3)
+
+```
