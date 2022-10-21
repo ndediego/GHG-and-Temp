@@ -1,0 +1,78 @@
+
+# Beijing 
+
+```{r}
+library(pacman)
+p_load(tidyverse)
+p_load(VIM)
+p_load(lubridate)
+
+options(scipen = 999)
+```
+
+## Introduction
+
+|           China is often cited as having severe air pollution. So much in fact that in 2014, the Chinese government declared a "War on Pollution". This data on Beijing air quality was obtained through the UC Irvine Machine Learning Repository, and was collected by four nationally-controlled air quality monitoring sites throughout the city of Beijing, which were produced in part because of the clean air initiative. The data set contains hourly measurements of four major air pollutants, carbon monoxide, nitrogen dioxide, sulfur dioxide, and ozone. The pollutants are measured in micrograms per cubic meter.
+
+```{r,results='hide',message=FALSE,warning=FALSE}
+df_1 <- read_csv("data/PRSA_Data_Tiantan_20130301-20170228.csv")
+
+df_2 <- read_csv("data/PRSA_Data_Shunyi_20130301-20170228.csv")
+
+df_3 <- read_csv("data/PRSA_Data_Dingling_20130301-20170228.csv")
+
+df_4 <- read_csv("data/PRSA_Data_Dongsi_20130301-20170228.csv")
+```
+### Importing Cleaning and Adding Pollutant Data
+
+For the data to be comparable with the temperature data set, the hourly measurements were converted into daily averages.
+
+```{r,results='hide',message=FALSE,warning=FALSE}
+df <- bind_rows(df_1, df_2, df_3, df_4)
+
+df
+```
+
+```{r,results='hide',message=FALSE,warning=FALSE}
+df <- df %>% 
+  mutate(date = make_date(year, month, day))
+```
+
+
+```{r,results='hide',message=FALSE,warning=FALSE}
+df_avgs <- df %>% 
+  group_by(date) %>% 
+  summarise(
+    avg_co = mean(CO, na.rm = TRUE),
+    avg_so2 = mean(SO2, na.rm =TRUE),
+    avg_No2 = mean(NO2, na.rm =TRUE),
+    avg_O3 = mean(O3, na.rm =TRUE)
+  )
+```
+
+```{r}
+df_avgs
+
+summary(df_avgs)
+```
+
+```{r,results='hide',message=FALSE,warning=FALSE}
+beijing <- city_temp_clean %>% 
+  filter(City == "Beijing")
+
+beijing <- beijing %>% 
+  filter(parsedDate >= "2013-03-01") 
+
+beijing <- beijing %>% 
+  filter(parsedDate <= "2017-02-28") 
+
+colnames(beijing)[9] <- "date"
+```
+
+
+
+```{r,results='hide',message=FALSE,warning=FALSE}
+total <- merge(beijing, df_avgs, by = "date")
+
+total
+```
