@@ -1,0 +1,777 @@
+---
+title: "An Analysis of Temperature: Causes and Effects"
+author: "Harry Podolsky, Nick de Diego, Katrina Hoop, Shannon Bean"
+date: "2022-5-20"
+output: 
+  html_document:
+      theme: "cosmo"
+      toc: yes
+      toc_float: yes
+      toc_depth: 2
+      number_sections: true
+      code_folding: hide
+---
+
+```{r setup, include=FALSE,message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(stringsAsFactors = FALSE)
+
+options(repr.plot.width = 60, repr.plot.height = 60)
+
+library(pacman)
+
+p_load(dplyr)
+p_load(FSAdata)
+p_load(FSA)
+p_load(magrittr)
+p_load(ggplot2)
+p_load(ggthemes)
+p_load(ggpubr)
+p_load(ggfortify)
+p_load(scales)
+p_load(tidyr)
+p_load(tidyverse)
+p_load(lubridate)
+p_load(gridExtra)
+p_load(moonBook)
+p_load(webr)
+p_load(PerformanceAnalytics)
+p_load(Hmisc)
+p_load(kableExtra)
+p_load(magick)
+
+```
+# Introduction
+
+
+|           This report references and analyzes a dataset of daily temperature data compiled by the National Climatic Data Center for 321 cities from around the world running from 1995 to March 2020. The dataset consists of more than 2.9 million total rows. Variables include: region, country, city, day, month, year and daily average temperature in Fahrenheit. There are issues with missing values in this dataset, and an imbalanced frequency of observations by region which makes it difficult to complete meaningful statistical comparisons by regional grouping. This report documents the process of isolating intact subsets of the data for initial analysis, and identifies trends and relevant research questions.
+|           Temperature is a powerful indicator of large-scale climate change. However, variability in temperature can mask trends over time, weakening a linear fit. A hypothesis: seasonal variation has a meaningful impact on the linear model for monthly temperature. This report examines this question for a subset of New Zealand temperature data, summarized by month. It attempts to validate the effect of seasonality by comparing linear models with and without seasonality incorporated, using ANOVA. Correlation between imputed glacial ice volume data and temperature is also explored. Is there a relationship between increasing temperatures and glacial ice retreat?
+
+# Read in Data
+```{r,message=FALSE,warning=FALSE}
+city_temp_clean<- read.csv("city_temperature.csv")
+
+# clean
+
+
+city_temp_clean <- city_temp_clean %>%
+  filter(Year!=200, Year!=201, Day!=0 , Year!=2020, State!="Washington DC")
+
+#Year 200, year 201, Day 0 are all bad data.
+
+#Year 2000 is incomplete (only thru May)
+city_temp_clean$AvgTemperature[city_temp_clean$AvgTemperature == -99] <- NA
+
+#creating a parsedDate column in order to use liquidate operations
+city_temp_clean$parsedDate <- ymd(paste0(city_temp_clean$Year,"-",city_temp_clean$Month,"-",city_temp_clean$Day))
+
+#Add a Celsius column with one decimal
+
+city_temp_clean$AvgTempCelsius <- ((city_temp_clean$AvgTemperature-32)*(5/9))
+city_temp_clean$AvgTempCelsius <- sapply(city_temp_clean$AvgTempCelsius, round,digits=1)
+
+
+#Creating my character vector of cities with complete count of records.
+full_record_cities <- city_temp_clean %>%
+  group_by(City) %>%
+  summarise(Annual_Avg=mean(AvgTempCelsius, na.rm=TRUE), Record_count=n()) %>% filter(Record_count>=9131) %>% arrange(-Record_count)%>% dplyr::select(City)
+
+#Filtering the dataframe by complete records:
+city_temp_clean <- city_temp_clean %>%
+  filter(is.element(City, full_record_cities$City))
+
+#Creating a character vector of Cities with fewer than 91 NAs (approximately 1% of the full record) , and filtering by that vector.
+
+good_cities <- city_temp_clean %>%
+  group_by(City) %>%
+  summarise(nas_present = sum(is.na(AvgTempCelsius))) %>%
+  filter(nas_present<=91)%>%
+  dplyr::select(City)
+
+city_temp_clean <- city_temp_clean %>%
+  filter(is.element(City, good_cities$City))
+
+city_list <- city_temp_clean%>%  
+  group_by(City)%>%
+  summarise(nas_present = sum(is.na(AvgTempCelsius)),record_count = n())%>%
+  arrange(-nas_present)%>%
+  unique()
+
+#a list of duplicated date records
+non_unique_dates <- city_temp_clean %>%
+  group_by(Region, State, City, Country, parsedDate) %>%
+  summarise(count_of_obs=n()) %>%
+  filter(count_of_obs>1)%>%
+  arrange(-count_of_obs)
+ 
+
+```
+
+
+|           The cleaned dataset exhibits a large discrepancy in total records when considered by region. The table below summarizes this phenomenon and provides some general insight into regional temperature behavior.
+|           Notice that North America contains greater than 1.4 million records - more than all other regions combined. This discrepancy makes regional comparison statistically difficult. In addition, there is a range in variance by region. Africa is the warmest region with a mean temperature of 19.89 C, but its standard deviation is only about half of that for North America. Warmer regions or regions that encompass fewer discrete climatic regions exhibit less variability than seasonal areas.
+
+```{r}
+summary_statistics_by_region <- city_temp_clean %>%
+  group_by(Region) %>%
+  dplyr::summarize(mean=mean(AvgTempCelsius, na.rm=TRUE), sd=sd(AvgTempCelsius,na.rm=TRUE),median=median(AvgTempCelsius, na.rm = TRUE), Record_count = n())%>%
+  as.data.frame() 
+
+  summary_statistics_by_region <-  rename(summary_statistics_by_region, "Mean Temperature (C)" = mean, "Median" = median, "Standard Deviation" = sd, "Number of Records" = Record_count)
+  
+summ_table_presentation <- summary_statistics_by_region%>% 
+    kbl(caption = "Summary Statistics by Region", ) %>%
+    kable_styling( font_size = 16)%>%
+  kable_paper("hover", full_width = F)%>%
+    kable_material_dark()
+    
+summ_table_presentation
+
+```
+|           The linear model of annual temperature over time shows a statistically significant relationship. It is graphed below. With a p-value of o.00097 and an R value of 0.62, this fit describes approximately 62% of the variation in annual temperature, and tracks a noticeable uptick in the average of over one degree between 1995 and 2019. At an alpha of 0.05 we have sufficient evidence to reject the hypothesis that there is no relationship between temperature and the passage of time during this period.
+```{r, message=FALSE}
+
+city_temp_clean%>%
+  group_by(Year)%>%
+  dplyr::summarize(
+    "Annual Average Temperature (C)"=mean(AvgTempCelsius, na.rm=TRUE),SD=sd(AvgTempCelsius, na.rm=TRUE)
+  )%>%
+ggscatter(x = "Year", y = "Annual Average Temperature (C)", 
+          add = "reg.line", 
+          conf.int = TRUE, 
+          add.params = list(color = "red",
+                            fill = "lightblue"),
+          color = "Annual Average Temperature (C)", 
+          cor.coef = TRUE, cor.method = "pearson", 
+          xlab = "Year", ylab = "Temperature in Celsius")+
+          labs(title = "Linear Model of Annual Global Temperature", subtitle= "With Confidence Interval")+
+          theme_bw()
+
+
+```
+
+
+# Mumbai
+
+### Filtering data
+```{r,results='hide',message=FALSE,warning=FALSE}
+
+Mumbai <- city_temp_clean %>%
+  filter(City == "Bombay (Mumbai)")
+
+
+```
+## Urbanization, Development and Temperature Increase: Mumbai, India
+
+|           There are important reasons to focus on cities when examining climate change and temperature change over time. As researchers have argued, high density, rapid population increase, and the urban development of cities (“urban heat islands”) make the impact of climate change more severe in cities (FPA, 2021; Lombrana and Dodge 2021). Mumbai (Bombay) India is the 9th most populated city (21 million) in the world and was selected as a case study for analysis because of its rapid growth in urbanization and industrialization over the past couple decades (https://ourworldindata.org/economic-growth). Traditional approaches to economic development (ie/ manufacturing) require a two-fold destruction of the environment: the development of land for industry (ie/factories) and the resulting pollution emitted by those industries. For this reason, analyzing manufacturing growth in a mega-city like Mumbai should be considered.  The following research questions drive this case study:
+1.Is there a significant positive correlation between time and temperature increase in Mumbai?   
+2.Is there a correlation between an increase in manufacturing growth (as indicated by US $) and temperature increase In Mumbai? 
+
+## Time and temperature in Mumbai
+
+For the first research question, hypotheses testing is as follows:
+Ho: There is no relationship between time (years) and temperature.
+Ha: There is a positive linear relationship between time (years) and temperature.
+
+Although annual seasonal fluctuations in temperature are a critical factor in analyzing temperature, Mumbai is relatively consistent compared to other regions of the world (https://en.climate-data.org/asia/india/maharashtra/mumbai-29/). After creating a new data frame, a new variable (average yearly temperatures) was run against temperature. The output examines the relationship between time (Indep var) on temperature (Dep var).   
+
+
+
+### Cleaning and regression with Avg Temp and time 
+```{r}
+
+MumbaiYearandTemp <-  Mumbai%>%
+                      group_by(Year)%>%
+                      dplyr::summarize("AvgTempCelsius"=mean(AvgTempCelsius, na.rm=TRUE))
+      
+  
+
+summary(lm(AvgTempCelsius ~ Year, data = MumbaiYearandTemp))
+```
+### Interpretation of the regression output
+
+  For each year that goes by, there is a .045  increase in average temperature on average (C).The adjusted R-squared value is .493 which means this model accounts for roughly 50% of variation in temperature. The slope of the fit is positive and the p-value (at 0.00005558) means that this relationship is statistically significant. There is a positive linear relationship between time and temperature when time is measured in years. It is worth noting that at the annual level, this fit is based on just a couple of dozen datapoints. A longer temperature trend would be needed to really prove that this trend is steady through time. This model is only commenting on the trend during this particular time slot.
+
+```{r}
+#linear model of time (yearly) with temp for Mumbai
+  
+MumbaiYearandTemp %>% 
+ggscatter(x = "Year", y = "AvgTempCelsius", 
+          add = "reg.line", 
+          conf.int = TRUE, 
+          add.params = list(color = "red",
+                            fill = "lightblue"),
+          cor.coef = TRUE, cor.method = "pearson", 
+          xlab = "Year", ylab = "Temperature in Celsius")+
+          labs(title = "Linear Model of Temperatures in Mumbai", subtitle= "With Confidence Interval")+
+          theme_bw()
+```
+## Manufacturing growth and temperature
+
+For the second research question, hypotheses testing is as follows:
+Ho: There is no relationship between manufacturing growth (US $) and temperature.
+Ha: There is a positive relationship between manufacturing increase (US $) and temperature.
+The following chart examines the relationship between manufacturing growth (independent variable) and temperature (dependent variable).   
+
+```{r}
+
+#added a column of economic data from same original datasource (Manufacturing - in US dollars 1995-2019) 
+
+MumbaiYearandTemp['ManufactureGrowth'] <- c(85661962758, 93800942935, 93848956738, 96788159277, 102000000000, 109000000000, 112000000000,
+120000000000, 127000000000, 137000000000, 149000000000, 176000000000, 188000000000, 197000000000, 219000000000, 235000000000, 243000000000,
+256000000000, 269000000000, 290000000000, 328000000000, 354000000000,
+380000000000, 401000000000, 391000000000)
+
+```
+### Regression analysis of Avg Temp of each year 
+
+```{r}
+summary(lm(AvgTempCelsius~ ManufactureGrowth, data = MumbaiYearandTemp))
+```
+### Interpretation of Manufacturing Growth and Temperature
+
+|           Manufacturing growth in total USD value is correlated with rise in temperature. The relationship is statistically significant with a p-value of 0.00002883, and manufacturing growth appears to explain 60% of variation in temperature. In addition, when manufacturing growth increases by 100,000,000,000 results in a temperature increase of roughly 0.25 degrees Celsius, on average.  This is discernible from the graph, and from the linear regression. As manufacturing growth spikes, the hypothesis is that localized temperature in the city increases. The direction of the two variables is positive and the p-value is close to zero which means that this relationship is statistically significant.  Therefore, the null hypothesis can be rejected. Industrialization does appear to trend with temperature.
+
+```{r}
+#plotting line between Manuf Growth and Avg Temp  
+
+MumbaiYearandTemp %>% 
+ggscatter(x = "ManufactureGrowth", y = "AvgTempCelsius", 
+          add = "reg.line", 
+          conf.int = TRUE, 
+          add.params = list(color = "red",
+                            fill = "lightblue"),
+          color = "red", 
+          cor.coef = TRUE, cor.method = "pearson", 
+          xlab = "Manufacturing (Growth in US Dollars)", ylab = "Temperature (C)")+
+          labs(title = "Linear Regression between Manufacturing Growth and Avg. Temperature (C)", subtitle= "With Confidence Interval")+
+          theme_bw()
+
+```
+### Limitations and analysis considerations
+
+As discussed previously, these data are limited for various reasons and any conclusions drawn from modeling must consider the complexity of climate change. While manufacturing seems to play a role in the increase of temperature in Mumbai, understanding this more fully requires knowledge of historical and regional characteristics, accurate data on a range of industries, and the role of economic sectors to name a few. Other variables from the dataset would have been interesting to examine such as natural resource depletion, consumption and energy use. However, missing data for many years would create challenges.   
+
+# Beijing 
+
+```{r}
+library(pacman)
+p_load(tidyverse)
+p_load(VIM)
+p_load(lubridate)
+
+options(scipen = 999)
+```
+
+## Introduction
+
+|           China is often cited as having severe air pollution. So much in fact that in 2014, the Chinese government declared a "War on Pollution". This data on Beijing air quality was obtained through the UC Irvine Machine Learning Repository, and was collected by four nationally-controlled air quality monitoring sites throughout the city of Beijing, which were produced in part because of the clean air initiative. The data set contains hourly measurements of four major air pollutants, carbon monoxide, nitrogen dioxide, sulfur dioxide, and ozone. The pollutants are measured in micrograms per cubic meter.
+
+```{r,results='hide',message=FALSE,warning=FALSE}
+df_1 <- read_csv("data/PRSA_Data_Tiantan_20130301-20170228.csv")
+
+df_2 <- read_csv("data/PRSA_Data_Shunyi_20130301-20170228.csv")
+
+df_3 <- read_csv("data/PRSA_Data_Dingling_20130301-20170228.csv")
+
+df_4 <- read_csv("data/PRSA_Data_Dongsi_20130301-20170228.csv")
+```
+### Importing Cleaning and Adding Pollutant Data
+
+For the data to be comparable with the temperature data set, the hourly measurements were converted into daily averages.
+
+```{r,results='hide',message=FALSE,warning=FALSE}
+df <- bind_rows(df_1, df_2, df_3, df_4)
+
+df
+```
+
+```{r,results='hide',message=FALSE,warning=FALSE}
+df <- df %>% 
+  mutate(date = make_date(year, month, day))
+```
+
+
+```{r,results='hide',message=FALSE,warning=FALSE}
+df_avgs <- df %>% 
+  group_by(date) %>% 
+  summarise(
+    avg_co = mean(CO, na.rm = TRUE),
+    avg_so2 = mean(SO2, na.rm =TRUE),
+    avg_No2 = mean(NO2, na.rm =TRUE),
+    avg_O3 = mean(O3, na.rm =TRUE)
+  )
+```
+
+```{r}
+df_avgs
+
+summary(df_avgs)
+```
+
+```{r,results='hide',message=FALSE,warning=FALSE}
+beijing <- city_temp_clean %>% 
+  filter(City == "Beijing")
+
+beijing <- beijing %>% 
+  filter(parsedDate >= "2013-03-01") 
+
+beijing <- beijing %>% 
+  filter(parsedDate <= "2017-02-28") 
+
+colnames(beijing)[9] <- "date"
+```
+
+
+
+```{r,results='hide',message=FALSE,warning=FALSE}
+total <- merge(beijing, df_avgs, by = "date")
+
+total
+```
+## Visualizing Trends
+
+To get a sense of the data, graphs measuring the daily average concentration of each of the pollutants on interest were generated, and can be seen below.
+
+
+```{r}
+co <- total %>% 
+  ggplot(aes(x = date)) +
+  geom_line(aes(y = avg_co), color = 'red') +
+  ggtitle("Average Carbon Monoxide Emissions Over Time") +
+  theme(plot.title = element_text(size=10))
+
+so2 <- total %>% 
+  ggplot(aes(x = date)) +
+  geom_line(aes(y = avg_so2), color = 'blue') +
+  ggtitle("Average Sulfur Dioxide Emissions Over Time")+
+  theme(plot.title = element_text(size=10))
+
+no2 <- total %>% 
+  ggplot(aes(x = date)) +
+  geom_line(aes(y = avg_No2), color = 'green') +
+  ggtitle("Average Nitrogen Dioxide Emissions Over Time")+
+  theme(plot.title = element_text(size=10))
+
+o3 <- total %>% 
+  ggplot(aes(x = date)) +
+  geom_line(aes(y = avg_O3), color = 'purple') +
+  ggtitle("Average Sulfur Dioxide Emissions Over Time")+
+  theme(plot.title = element_text(size=10))
+
+grid.arrange(co, so2, no2, o3, ncol = 2)
+```
+
+
+## Performing Regressions on Temperature and Pollution Data
+
+
+|           Now that the data is in the proper format, the next step is to determine whether or not there is any correlation between average greenhouse gas pollutant concentration and average daily temperature. First, a simple linear regression model was run, with average temperature as the dependent variable, and each of the pollutant concentrations as the independent variables. This model generated an adjusted R squared value of 0.581, implying that roughly 58% of the data points are explained by this model. It also generated a p value of 0.00000000000000022, implying the results are significant, and likely not the result of random chance. This model is adequate, but can likely be improved.
+
+
+
+```{r}
+model <- lm(AvgTemperature ~ avg_co + avg_so2 + avg_No2 + avg_O3, data = total)
+
+coef(model)
+
+summary(model)
+```
+
+|           The next step is to perform a step wise regression, which will remove any independent variables that are not contributing strongly to the model. When the step wise model was run it generated the same regression equation with the same coefficients as the linear model. This, along with the p values, tells us that all of the pollutants are significant contributors to average daily temperature, but the model is not improved from the simple linear regression run above.
+
+
+```{r}
+model2 <- step(lm(AvgTemperature ~ avg_co + avg_so2 + avg_No2 + avg_O3, data = total), direction = "both")
+
+summary(model2)
+```
+
+|           Looking at the graphs above, it can be seen that there is a certain amount of seasonal fluctuation in the concentration of the pollutants. For this reason, it was determined that a model should be produced that accounted for seasonality as a factor. Using the code below, a "season" variable was added to the dataframe depending on the "Month" column.
+
+
+```{r,results='hide',message=FALSE,warning=FALSE}
+map_to_season_north <- function(month_int){
+  
+  months_df <- data.frame(month_num = c(1,2,3,4,5,6,7,8,9,10,11,12), 
+                          season=c('winter', 'winter', 'spring', 'spring', 'spring', 'summer', 'summer', 'summer', 'fall', 'fall', 'fall', 'winter'))
+  
+  result <- months_df[months_df$month_num == month_int,]$season
+  return(result)
+}
+
+season <- unlist(lapply(month(total$Month), map_to_season_north))
+
+
+total_w_season <- cbind(total, season)
+
+total_w_season
+```
+
+
+
+|           Once seasonality was added to the data frame, it becomes possible to control for seasonality as a factor. When the model is run, it generates an adjusted R squared value of 0.823, implying that roughly 83% of data points can be explained by the model. This is a significant improvement over the simple linear model that did not account for seasonality. It also generated a p value of 0.00000000000000022. From these results, we can conclude with high confidence that there is a high correlation between air pollution concentration and temperature.
+
+```{r}
+model3 <- lm(AvgTemperature ~ avg_co + avg_so2 + avg_No2 + avg_O3 + as.factor(season), data = total_w_season)
+
+
+summary(model3)
+
+```
+
+
+
+# New Zealand 
+
+## Introduction
+
+|           New Zealand's temperature data is from a single source - the city of Auckland. Auckland is located on the North Island of New Zealand. This temperature record will be used as a proxy for country-wide temperature for the purposes of this analysis. Below is a plot of annual average temperature, with linear fit. There is a clear increasing trend in temperature at the annual level during this period, similar to the global trend observed.
+
+|           New Zealand is famous for its natural beauty and glaciers, and the country is also well known for a strong role in the development of R and data analytics. It is not particularly surprising that the government maintains a robust data repository of information relevant to the country. This section delves into New Zealand-specific data. 
+
+```{r,message=FALSE,warning=FALSE}
+city_temp_clean%>%
+  group_by(Year)%>%
+  filter(Country=="New Zealand")%>%
+    dplyr::summarize(
+    Annual_Avg=mean(AvgTempCelsius, na.rm=TRUE),SD=sd(AvgTempCelsius, na.rm=TRUE)) %>%
+    ggplot(aes(Year,Annual_Avg)) +
+      geom_line()+
+      geom_smooth(method='lm',se=F)+
+      #geom_abline(intercept=euro_intercept, slope=euro_slope, color='red', name="European Trend Line") +
+      xlim(1995, 2019)+
+      theme_bw()+
+      labs(y="Annual Average Temperature (Degrees Celsius)", title = "Average Temperature in NZ With Best Fit Line", subtitle = "1995-2019")
+```
+## Data Preparation
+
+|           Initial data preparation tasks include assigning a dataframe of New Zealand (NZ)-specific records to speed up analysis. Preparation also includes adding a categorical variable for southern hemisphere seasonality, and preparing and joining glacial ice volume data which will be introduced further below. The following script prepares the new dataframe.
+
+```{r,results='hide',message=FALSE,warning=FALSE}
+# new dataframe for New Zealand Data
+nz_temp <- city_temp_clean%>%filter(Country=='New Zealand')
+```
+
+```{r,message=FALSE,warning=FALSE,results='hide'}
+#this function takes month number as the input and assigns a categorical variable for season depending on the result. The output is tuned to the southern hemisphere. It will be used to add season information for the monthly record.
+map_to_season_south <- function(month_int){
+  
+  months_df <- data.frame(month_num = c(1,2,3,4,5,6,7,8,9,10,11,12), 
+                          season=c('summer', 'summer', 'fall', 'fall', 'fall', 'winter', 'winter', 'winter', 'spring', 'spring', 'spring', 'summer'))
+  
+  result <- months_df[months_df$month_num == month_int,]$season
+  return(result)
+}
+
+map_to_season_south(1)
+```
+
+```{r,message=FALSE,warning=FALSE}
+
+# assigning a dataframe of monthly temperatures, with season information and an additional date object that denotes unique month-year combo.
+
+nz_monthly_temp <- nz_temp%>%
+  group_by(Year=year(parsedDate),Month=month(parsedDate)) %>% 
+  summarise(AvgTempCelsius=mean(AvgTempCelsius, na.rm = TRUE))%>%
+  mutate(firstofmonth = ymd(paste0(Year,'-' , Month, '-1')))
+
+nz_seasons <- unlist(lapply(month(nz_monthly_temp$firstofmonth), map_to_season_south))
+
+nz_monthly_temp <- cbind(nz_monthly_temp, nz_seasons)
+
+names(nz_monthly_temp) <- c('Year','Month','AvgTempCelsius','firstofmonth','season')
+
+head(nz_monthly_temp)
+```
+
+|           The New Zealand Ministry for the Environment Published an annual record of ice volume from 1995 through 2020. This record pulled from NOAA-satellite observations to generate an estimate of country-wide glacial ice volume. We applied a seasonal multiplier and a small amount of randomness to introduce variability in an interpolated monthly record of ice volume over the period, and joined it to the monthly temperature record for Auckland.
+
+
+```{r}
+#annual ice file
+nz_ice<- read.csv("data/annual_glacier_volume.csv")
+#expand to dataframe of monthly data, with columns for annual total as repeating values per year for monthly volume (/12). 
+nz_monthly_ice <- nz_ice%>%mutate(month = 1) %>%
+  complete(year, month = 1:12) %>%
+  fill(ice_volume_km.3) 
+  #mutate_at(vars(ice_volume_km.3), ~./12)
+
+#character vector of seasons
+nz_seasons <- unlist(lapply(nz_monthly_ice$month, map_to_season_south))
+
+#add character vector of seasons to monthly ice dataframe
+nz_monthly_ice <- cbind(nz_monthly_ice, nz_seasons)
+
+
+                                                   
+nz_monthly_ice <- nz_monthly_ice%>%mutate(firstofmonth = ymd(paste0(year,'-' , month, '-1')))
+names(nz_monthly_ice) <- c("year", "month", "monthly_ice", "nz_seasons", "firstofmonth")
+```
+
+|           A process of imputing from annual data to generate monthly ice records was undertaken. This was accomplished by setting a seasonal variance around the annual mean of 5 percent, meaning a 5% increase in annual mean volume was added in winter, and 5 percent was subtracted in summer. This was metered out by month, and then a small amount of variation was randomly added to each observation to simulate seasonal noise. Note: the researchers are aware that this data is estimated at best. The goal was to generate datapoints for ice so that the overall trend could be examined in relation to temperature. There are myriad approaches to imputing data, and none are perfect.
+
+```{r,message=FALSE,warning=FALSE,results='hide'}
+#dataframe of monthly seasonal multipliers for ice volume
+temp_monthly = data.frame(list(1:12, c(.95, .95, .975, 1, 1.025, 1.05, 1.05, 1.025, 1, .975, .95, .925)))
+
+names(temp_monthly)= c("month", "delta")
+#joining to monthly ice record, and creating new monthly ice values using delta multipliers 
+nz_monthly_ice <- left_join(nz_monthly_ice, temp_monthly, by="month")
+nz_monthly_ice <- nz_monthly_ice %>% mutate(monthly_ice = delta* monthly_ice+runif(300,-1,1))
+# redefining to selected columns, converting to numeric to generate firstofmonth variable for join to temp data
+nz_monthly_ice <- nz_monthly_ice %>% select(year,month,monthly_ice)
+nz_monthly_ice$year <- as.numeric(nz_monthly_ice$year)
+nz_monthly_ice$month <- as.numeric(nz_monthly_ice$month)
+
+nz_monthly_ice$firstofmonth = ymd(paste0(nz_monthly_ice$year,'-' , nz_monthly_ice$month, '-1'))
+#joining ice volume and temp tada
+nz_monthly_temp <- left_join(nz_monthly_temp, nz_monthly_ice, by="firstofmonth")
+nz_monthly_temp%>%select(firstofmonth,season,AvgTempCelsius,monthly_ice)
+
+# set seed for random number generator to add noise to glacial data
+set.seed(1000)
+nz_monthly_temp$monthly_ice <- nz_monthly_temp$monthly_ice + runif(1, -1, 1)
+```
+## Examining the Temperature - Ice Relationship
+
+|           The volume of ice has declined precipitously, with a 38% reduction in glacial volume over the period. This is a profoundly concerning result for a number of reasons, chief among them being that these glaciers took thousands or tens of thousands of years to accumulate the volume that was erased in a period of a couple of decades. The graph below depicts the trend of glacial ice volume for the imputed monthly record generated above.
+
+|           At first glance the rate of change for glacial ice far outpaces the modest overall increase in NZ temperature observed over the same period. Is it possible that temperature is a statistically significant predictor of the ice decline? 
+
+
+```{r,message=FALSE,warning=FALSE}
+nz_monthly_temp%>%
+    ggplot(aes(firstofmonth,monthly_ice)) +
+    geom_line()+
+    geom_smooth(method='lm',se=F)+
+    #geom_abline(intercept=euro_intercept, slope=euro_slope, color='red', name="European Trend Line") +
+    #xlim(1995, 2019)+
+    theme_bw()+
+    labs(y="Monthly Average Ice Volume (KM^3)",x="Month", title = "Monthly Ice in NZ With Best Fit Line", subtitle = "1995-2019")
+```
+
+|           The next step is to use an appropriate correlation test to look for a relationship between temperature and ice volume. These two variables are assumed to be normal due to the volume of observations. As a result, the Pearson product-moment correlation test is appropriate. The null hypothesis is that there is no relationship between temperature and ice volume in NZ. The significance level for this test will be 0.01. Below is a scatter plot of temperature vs. ice observations. Ice is on the y axis. The Pearson test results are displayed on the chart. The Pearson test coefficient (R) equals -0.31, indicating a negative relationship between temperature and ice. The p-value of 0.00000004 is well below the significance level of .01. These results indicate that there is a negative relationship between temperature and ice, and that this relationship is significant. As temperature rises, glacial ice recedes.
+
+```{r}
+ggscatter(nz_monthly_temp, x = "AvgTempCelsius", y = "monthly_ice",
+          color = "red", cor.coef = TRUE, 
+          cor.method = "pearson",
+          xlab = "Temperature (C)", ylab = "Ice (km^3")
+```
+
+
+
+
+## Examining and Refining a Linear Model of Monthly Temperature in New Zealand
+
+|           The linear fit for monthly temperature data is graphed and summarized below. Fitting and evaluating a model on monthly average date instead of daily observations improves performance and clears up the picture somewhat. The data are widely dispersed around the theoretical line of best fit in a regular pattern caused by season, and therefore the adjusted r-squared is still essentially zero. The line graph of monthly temperature below makes this cyclical effect abundantly clear.
+
+```{r}
+# monthly temperatures in NZ, adding a unique column "first of month" that denotes each unique month and year
+ 
+
+nz_monthly_temp %>%
+  lm(AvgTempCelsius~firstofmonth, data= .) %>%
+  summary()
+
+nz_monthly_temp%>%
+  lm(AvgTempCelsius~firstofmonth, data= .) %>%
+  ggplot(aes(firstofmonth,AvgTempCelsius)) +
+      geom_line()+
+      geom_smooth(method='lm',se=F)+
+      #geom_abline(intercept=euro_intercept, slope=euro_slope, color='red', name="European Trend Line") +
+      #ylim(9, 16)+
+      theme_bw()+
+      labs(y="Average Temperature (Degrees Celsius)", x="Month", title = "Average Monthly Temperature in NZ With Best Fit Line", subtitle = "1995-2019")
+```
+
+The adjusted R-squared for a linear model of temperature ~ month across the record is 0.002779. This indicates essentially no relationship between temperature and time, with a p-value of 0.679. Below, the residual graphs for this fit (using the term loosely) are displayed.
+
+```{r}
+nz_monthly_temp %>%
+  lm(AvgTempCelsius~firstofmonth, data= .) %>% plot()
+```
+
+|           The residual plots confirm that variance is weakening the quality of this fit. The QQ plot demonstrates that the standardized residuals fall well away from the theorized quantiles at either end of the distribution, another indicator of variance caused by seasonality.
+
+
+
+## Accounting for Seasonality in the New Zealand Temperature Record 
+
+|           There is significant variance in the monthly temperature record, particularly spotlighted in the residuals vs. fitted chart above. The linear fit visibly displays a very very slight upward trend, but there is no statistical reason to trust it. Seasonal variability introduces too much variance. The following exercise attempts one method for accounting for this variability, by incorporating seasonality into the an improved linear model as a dummy variable. The restricted model is the linear model of temperature by month summarized above, while the full model incorporates seasonality. Note: seasonal shifts are different each year - they can start early, end late, or even reverse periodically. For the purpose of this investigation, this randomness is ignored. The categorical imputation function map_to_season_south assigns season by month - December, January, February being summer, March, April, June being autumn, and so forth. This is a very high-level approach to assigning seasonality in the hopes of reducing variance in the model.
+
+```{r}
+restricted <- nz_monthly_temp %>%
+  
+    lm(AvgTempCelsius~firstofmonth, data= .)
+
+full <- nz_monthly_temp %>%
+  
+    lm(AvgTempCelsius~firstofmonth+as.factor(season), data= .)
+
+
+  nz_monthly_temp %>%
+    lm(AvgTempCelsius~firstofmonth, data= .) %>%
+    summary()
+  
+  nz_monthly_temp %>%
+    lm(AvgTempCelsius~firstofmonth+as.factor(season), data= .) %>%
+    summary()
+
+
+
+
+  
+```
+|           The Restricted model in this case is the original model without seasonality. The full model adds seasonality as a variable. When the two models are compared, the results are stark. With an adjusted R-squared of 0.7993, the model accounting for seasonality is predicting approximately 79.9% of the variation in temperature, as compared to an adjusted R-squared of just under 0% prediction value in the restricted model as was previously covered. The p-value for the full model is essentially zero, indicating a statistically significant fit for this model to the data.
+|           Accounting for seasonality generates a far stronger fit for the model by parsing the swings in temperature brought on by the changing seasons. A simple linear regression is hopeless for describing a meaningful trend for the overall data. This approach reveals that seasonality has a dominant effect on monthly temperature on an annual basis. Transforming the line by season, even by a very rough and admittedly inaccurate assignment of season by month (seasons rarely fall perfectly into three month buckets, so the season category is really an approximation), vastly improves the predictive power of the model. The model has treated fall as the reference, comparing the other three seasons to it.
+
+```{r}
+plot(full)
+```
+
+
+|           An examination of the residuals plots for the seasonality model reveals how seasonality is factored in. The residuals vs. fitted graph diplays how the points are grouped by season in the full model, and fitted from there - reducing variance markedly compared to the residual vs. fitted graph from the restricted model. The QQ plot also reveals how residuals stay far closer to the theorized line. This impact is seen throughout -  the variance described by the linear fit is smaller when seasonality is treated as a variable.
+
+## Confirming efficacy of the seasonality model through ANOVA 
+
+|           To wrap up this seasonal exploration of temperature, I conducted a likelihood ratio ANOVA test on the monthly models for New Zealand temperature with and without accounting for seasonality, and included a rough graph of the two models overlayed on the data with some numeric characteristics displayed. My null hypothesis for the likelihood ratio test is that after accounting for seasonality, time is not predictive of average monthly temperature. My alternative hypothesis is that after accounting for seasonality, there is a meaningful change in monthly average temperature over time. The P-value for this test is essentially zero at 2.2e-16, leading me to reject the null hypothesis at an alpha of 0.01 and conclude that the seasonality model does predict temperature through time to a greater extent than the restricted model. The much higher R-squared of 0.7993 further strengthens this case. 
+
+```{r}
+anova(restricted, full, test="LRT")
+```
+
+
+
+
+# Conclusions
+
+|           In recent history, the conversation about climate change often points towards production and greenhouse gas emissions as contributing factors to increasing temperatures. Throughout this analysis, three separate cities have been investigated to determine whether or not some of these factors have played a contributing role in rising temperatures in a localized city environment. When investigating Dubai, India, temperature changes were examined in relation to manufacturing growth. From the regression performed above, it can be seen that there is a correlation between manufacturing growth and temperature rise, with an adjusted R squared value of 0.605 and a p-value of 0.00002883, we can say these results are significant and are likely not the result of random chance. 
+|           When this analysis looked at Beijing, where temperature was investigated in the background of greenhouse gas concentration, there were significant results once again. Four major pollutants were considered, carbon monoxide, sulfur dioxide, nitrogen dioxide, and ozone. When a linear model was run with these four pollutants as independent variables with seasonality as a factor, it produces an adjusted R squared value of 0.823 and a p-value of 0.00000000000000022. With this information in mind, it can be concluded that the concentration of airborne pollutants is likely to have an effect on average temperature.
+|           Lastly, this analysis looked to determine if these rising temperatures, which are likely, in part, the effect of increased production and air pollution, had any effect on the environment. In Auckland, New Zealand, country-wide glacial volume is tracked and investigated. When a model is run with temperature as the independent variable and glacial volume as the dependent variable, and seasonality is included as a factor, it generates an adjusted R squared of 0.799 with a p-value of essentially 0, concluding that increased temperatures likely had an effect on glacial volumes.
+|           With the results of this analysis in mind, it is obvious that now more than ever, we as a society need to incentivize clean green production and reduce air pollution, or else it is likely we will continue to see dramatic levels of glacial ice loss throughout the world.
+
+
+
+
+
+
+
+
+
+
+
+# References
+
+  * Alboukadel Kassambara (2020). ggpubr: 'ggplot2' Based Publication Ready Plots. R package version 0.4.0.
+    https://CRAN.R-project.org/package=ggpubr
+    
+  * Annual glacier ice volumes, 1977-2016 - Environmental Reporting | | GIS Map Data | MfE Data Service. (2017, October 16). New Zealand Ministry for the Environment. Retrieved May 8, 2022, from https://data.mfe.govt.nz/table/89472-annual-glacier-ice-volumes-19772016/ 
+  
+  * Brian G. Peterson and Peter Carl (2020). PerformanceAnalytics: Econometric Tools for Performance and Risk Analysis. R package version 2.0.4.
+    https://CRAN.R-project.org/package=PerformanceAnalytics
+    
+  * Beijing Multi-Site Air-Quality Data Data Set. UCI Machine Learning Repository. (n.d.). Retrieved May 12, 2022, from https://archive.ics.uci.edu/ml/datasets/Beijing+Multi-Site+Air-Quality+Data
+  
+  * Climate Mumbai India. (n.d.), Retrieved May 8, 2022, from https://en.climate-data.org/asia/india/maharashtra/mumbai-29/
+  
+  * Correlation matrix : A quick start guide to analyze, format and visualize a correlation matrix using R software - Easy Guides - Wiki - STHDA. (n.d.). Sthda.Com. Retrieved December 12, 2021, from                  http://www.sthda.com/english/wiki/correlation-matrix-a-quick-start-guide-to-analyze-format-and-visualize-a-correlation-matrix-using-r-software
+  
+  * Daily Temperature of Major Cities. (2022, April 22). Kaggle.
+https://www.kaggle.com/sudalairajkumar/daily-temperature-of-major-cities
+  
+  * French Press Agency (FPA). (2021, October 5). Global warming threatens big cities, study shows. https://www.dailysabah.com/life/environment/global-warming-threatens-big-cities-study-show
+  
+  * Greenstone, M., He, G., Li, S., & Zou, E. Y. (2021). China’s war on pollution: Evidence from the first 5 years. Review of Environmental Economics and Policy, 15(2), 281–299. https://doi.org/10.1086/715550 
+  
+  * H. Wickham. ggplot2: Elegant Graphics for Data Analysis. Springer-Verlag New York, 2016.
+  
+  * Hadley Wickham, Romain François, Lionel Henry and Kirill Müller (2021). dplyr: A Grammar of Data Manipulation. R package version 1.0.7. https://CRAN.R-project.org/package=dplyr
+  
+  * Hao Zhu (2021). kableExtra: Construct Complex Table with 'kable' and Pipe Syntax. R package version 1.3.4. https://CRAN.R-project.org/package=kableExtra
+  
+  * Keon-Woong Moon. R statistics and graphs for medical papers. Hannaare Seoul, 2015.
+  
+  * Keon-Woong Moon (2021). webr: Data and Functions for Web-Based Analysis. R package version 0.1.6. https://github.com/cardiomoon/webr
+  
+  * Lombrana, L.M. and S. Dodge. (2021, April 19). Whatever Climate Change does to the world, cities will be hit hardest. https://www.bloomberg.com/graphics/2021-cities-climate-victims/
+  
+  * Rinker, T. W. & Kurkiewicz, D. (2017). pacman: Package Management for R. version 0.5.0. Buffalo, New York. http://github.com/trinker/pacman
+  
+  * Roser, M. (2013). Economic Growth. Published online at OurWorldinData.org. Retrieved from: https://ourworldindata.org/economic-growth (online resource)
+
+  * R Core Team. (2016). R: A Language and Environment for Statistical Computing. Vienna, Austria. Retrieved from https://www.R-project.org/
+  
+  * University Cooperation for Atmospheric Research. (UCAR). (n.d.), Urban Heat Islands. Retrieved May 6, 2022, from https://scied.ucar.edu/learning-zone/climate-change-impacts/urban-heat-islands
+  
+  * Urban population | Data. (n.d.). World Bank. Retrieved November 13, 2021, from https://data.worldbank.org/indicator/SP.URB.TOTL
+  
+  * Wickham et al., (2019). Welcome to the tidyverse. Journal of Open Source Software, 4(43), 1686, https://doi.org/10.21105/joss.01686
+  
+  * Yuan Tang, Masaaki Horikoshi, and Wenxuan Li. "ggfortify: Unified Interface to Visualize Statistical Result of Popular R Packages." The R Journal
+    8.2 (2016): 478-489.
+
+# APPENDIX 
+
+```{r}
+#lm for NZ ANNUAL temp 
+nz_annual_lm <- lm( nz_temp$AvgTempCelsius~nz_temp$parsedDate)
+summary(nz_annual_lm)
+plot(nz_annual_lm)
+
+```
+
+## Exploring Glacial Ice and Temperature Trends
+
+Glacial 
+
+
+To display the two models side by side, the research group wrote a function to display each linear fit over the data with model descriptors included on the plot for ease of interpretation. The plots below appear to show two visually identical regressions - but the numeric characteristics of the models are vastly different. The top chart is the restricted model, and the bottom is the full model factoring seasonality.
+
+```{r}
+ggplotRegression <- function (fit) {
+
+require(ggplot2)
+
+ggplot(fit$model, aes_string(x = names(fit$model)[2], y = names(fit$model)[1])) + 
+  geom_line() +
+  stat_smooth(method = "lm", col = "red") +
+  labs(x="Month",title = paste("Adj R2 = ",signif(summary(fit)$adj.r.squared, 5),
+                     "Intercept =",signif(fit$coef[[1]],5 ),
+                     " Slope =",signif(fit$coef[[2]], 5),
+                     " P =",signif(summary(fit)$coef[2,4], 5)))
+}
+
+grid.arrange(ggplotRegression(restricted), ggplotRegression(full) )
+```
+
+Convert ice and temp NZ data to a time series
+
+
+```{r}
+time_series_temp <- ts(nz_monthly_temp%>%select(AvgTempCelsius),frequency = 12, start = c(1995,1))
+time_series_ice <- ts(nz_monthly_temp%>%select(monthly_ice),frequency = 12, start = c(1995,1))
+
+plot.ts(time_series_temp)
+plot.ts(time_series_ice)
+#the components for each time series include estimated effect of seasonality, error or "white noise" as well as the general trends. They can then be subtracted from the original data to account for individual trends. this is all estimate of course.
+ts_temp_components <- decompose(time_series_temp)
+ts_ice_components <- decompose(time_series_ice)
+plot(decompose(time_series_temp))
+plot(decompose(time_series_ice))
+```
+```{r}
+# removes estimated seasonality effect from ice data. This does smooth out some of the seasonal swings, probably a good thing!
+ts_ice_seasonallyadjusted <- time_series_ice-ts_ice_components$seasonal
+plot(time_series_ice)
+plot(ts_ice_seasonallyadjusted) # removes estimated seasonality effect from ice data. This does smooth out some of the seasonal swings, probably a good thing!
+
+acf(ts.intersect(time_series_ice,time_series_temp))
+
+
+```
+
+
+
+
